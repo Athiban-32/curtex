@@ -23,11 +23,10 @@ export const generateOrderNumber = async (prefix: string): Promise<string> => {
   let nextNumber = 1;
   if (counterSnap.exists()) {
     nextNumber = counterSnap.data().count + 1;
+    await updateDoc(counterRef, { count: nextNumber });
+  } else {
+    await addDoc(collection(db, 'counters'), { id: prefix, count: nextNumber });
   }
-  
-  await updateDoc(counterRef, { count: nextNumber }).catch(() => {
-    addDoc(collection(db, 'counters'), { count: nextNumber });
-  });
   
   return `${prefix}${String(nextNumber).padStart(4, '0')}`;
 };
