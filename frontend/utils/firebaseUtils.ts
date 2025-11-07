@@ -50,11 +50,10 @@ export const generateRollNumber = async (): Promise<number> => {
   let nextNumber = 1;
   if (counterSnap.exists()) {
     nextNumber = counterSnap.data().count + 1;
+    await updateDoc(counterRef, { count: nextNumber });
+  } else {
+    await addDoc(collection(db, 'counters'), { id: 'rollNumber', count: nextNumber });
   }
-  
-  await updateDoc(counterRef, { count: nextNumber }).catch(() => {
-    addDoc(collection(db, 'counters'), { count: nextNumber });
-  });
   
   return nextNumber;
 };
