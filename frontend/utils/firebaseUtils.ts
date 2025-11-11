@@ -2,7 +2,6 @@ import {
   collection, 
   addDoc, 
   updateDoc, 
-  deleteDoc, 
   doc, 
   getDocs, 
   query, 
@@ -10,12 +9,38 @@ import {
   orderBy,
   onSnapshot,
   Timestamp,
-  getDoc
+  getDoc,
+  setDoc,
+  deleteDoc
 } from 'firebase/firestore';
-import { db } from '../firebase.config';
-import { FabricInventory, FabricMovement, DyeingOrder, JobCard, StitchingWorkOrder } from '../types';
+import { db, auth } from '../firebase.config'; 
+import { FabricInventory, FabricMovement, DyeingOrder, JobCard, StitchingWorkOrder, AuditLogEntry, StageStatus } from '../types';
 
-// Generate auto-incrementing numbers
+// --- Helper functions to safely convert Timestamps or Dates ---
+const safeToDate = (field: any): Date => {
+  if (field && typeof field.toDate === 'function') {
+    return field.toDate(); // It's a Firebase Timestamp
+  }
+  if (field instanceof Date) {
+    return field; // It's already a JS Date
+  }
+  return new Date(); // Fallback
+};
+
+const safeToOptionalDate = (field: any): Date | undefined => {
+  if (!field) {
+    return undefined;
+  }
+  if (field && typeof field.toDate === 'function') {
+    return field.toDate();
+  }
+  if (field instanceof Date) {
+    return field;
+  }
+  return undefined;
+};
+
+// --- (Your existing generateOrderNumber and generateRollNumber functions) ---
 export const generateOrderNumber = async (prefix: string): Promise<string> => {
   const counterRef = doc(db, 'counters', prefix);
   const counterSnap = await getDoc(counterRef);
@@ -25,22 +50,10 @@ export const generateOrderNumber = async (prefix: string): Promise<string> => {
     nextNumber = counterSnap.data().count + 1;
     await updateDoc(counterRef, { count: nextNumber });
   } else {
-    await addDoc(collection(db, 'counters'), { id: prefix, count: nextNumber });
+    await setDoc(counterRef, { count: nextNumber });
   }
   
   return `${prefix}${String(nextNumber).padStart(4, '0')}`;
-};
-
-// Fabric Inventory
-export const addFabricInventory = async (fabric: Omit<FabricInventory, 'id'>) => {
-  const rollNumber = await generateRollNumber();
-  const fabricData = {
-    ...fabric,
-    rollNumber,
-    remainingQuantity: fabric.quantity,
-    inwardDate: Timestamp.fromDate(fabric.inwardDate as Date),
-  };
-  return await addDoc(collection(db, 'fabricInventory'), fabricData);
 };
 
 export const generateRollNumber = async (): Promise<number> => {
@@ -52,10 +65,84 @@ export const generateRollNumber = async (): Promise<number> => {
     nextNumber = counterSnap.data().count + 1;
     await updateDoc(counterRef, { count: nextNumber });
   } else {
-    await addDoc(collection(db, 'counters'), { id: 'rollNumber', count: nextNumber });
+    await setDoc(counterRef, { count: nextNumber });
   }
   
   return nextNumber;
+};
+
+
+// --- AUDIT LOG FUNCTIONS ---
+export const addAuditLog = async (
+  type: AuditLogEntry['type'],
+  collectionName: string,
+  docId: string,
+  docRef: string,
+  changeDetails: string
+) => {
+  try {
+    const userEmail = auth.currentUser?.email || 'system';
+    
+    await addDoc(collection(db, 'auditLogs'), {
+      type,
+      userEmail,
+      collectionName,
+      docId,
+      docRef,
+      changeDetails,
+      timestamp: Timestamp.now(), 
+      canUndo: type === 'ADD',
+    });
+  } catch (error) {
+    console.error("Failed to add audit log:", error);
+  }
+};
+
+export const deleteDocument = async (collectionName: string, docId: string, docRefString: string) => {
+  const docRef = doc(db, collectionName, docId);
+  await deleteDoc(docRef);
+  
+  await addAuditLog(
+    'DELETE',
+    collectionName,
+    docId,
+    docRefString,
+    `Document deleted from ${collectionName} via Undo`
+  );
+};
+
+export const listenToAuditLogs = (callback: (data: AuditLogEntry[]) => void) => {
+  const q = query(collection(db, 'auditLogs'), orderBy('timestamp', 'desc'));
+  return onSnapshot(q, (snapshot) => {
+    const logs = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      timestamp: safeToDate(doc.data().timestamp), 
+    })) as AuditLogEntry[];
+    callback(logs);
+  });
+};
+
+// --- (All your other add/update functions remain the same) ---
+// --- Fabric Inventory ---
+export const addFabricInventory = async (fabric: Omit<FabricInventory, 'id' | 'rollNumber'>) => {
+  const rollNumber = await generateRollNumber();
+  const fabricData = {
+    ...fabric,
+    rollNumber,
+    remainingQuantity: fabric.quantity,
+    inwardDate: Timestamp.fromDate(fabric.inwardDate as Date),
+  };
+  const docRef = await addDoc(collection(db, 'fabricInventory'), fabricData);
+  
+  await addAuditLog(
+    'ADD', 
+    'fabricInventory', 
+    docRef.id, 
+    fabric.fabricCode, 
+    `Added Roll #${rollNumber} with ${fabric.quantity}m`
+  );
+  return docRef;
 };
 
 export const updateFabricInventory = async (id: string, data: Partial<FabricInventory>) => {
@@ -63,57 +150,41 @@ export const updateFabricInventory = async (id: string, data: Partial<FabricInve
   return await updateDoc(docRef, data);
 };
 
-export const listenToFabricInventory = (callback: (data: FabricInventory[]) => void) => {
-  const q = query(collection(db, 'fabricInventory'), orderBy('rollNumber', 'desc'));
-  return onSnapshot(q, (snapshot) => {
-    const fabrics = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-      inwardDate: doc.data().inwardDate?.toDate(),
-    })) as FabricInventory[];
-    callback(fabrics);
-  });
-};
-
-// Fabric Movements
+// --- Fabric Movements ---
 export const addFabricMovement = async (movement: Omit<FabricMovement, 'id'>) => {
   const movementData = {
     ...movement,
     date: Timestamp.fromDate(movement.date as Date),
   };
   
-  // Update remaining quantity in inventory
   const fabricRef = doc(db, 'fabricInventory', movement.rollId);
   const fabricSnap = await getDoc(fabricRef);
   
   if (fabricSnap.exists()) {
-    const currentQuantity = fabricSnap.data().remainingQuantity;
+    const fabricData = fabricSnap.data();
+    const currentQuantity = fabricData.remainingQuantity;
     const newQuantity = movement.movementType === 'outward' 
       ? currentQuantity - movement.quantity 
       : currentQuantity + movement.quantity;
-    
+      
     await updateDoc(fabricRef, { 
       remainingQuantity: newQuantity,
       status: newQuantity <= 0 ? 'consumed' : 'active'
     });
+
+    await addAuditLog(
+      'UPDATE',
+      'fabricInventory',
+      fabricSnap.id,
+      fabricData.fabricCode,
+      `Roll #${fabricData.rollNumber}: Quantity ${currentQuantity}m -> ${newQuantity}m`
+    );
   }
   
   return await addDoc(collection(db, 'fabricMovements'), movementData);
 };
 
-export const listenToFabricMovements = (callback: (data: FabricMovement[]) => void) => {
-  const q = query(collection(db, 'fabricMovements'), orderBy('date', 'desc'));
-  return onSnapshot(q, (snapshot) => {
-    const movements = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-      date: doc.data().date?.toDate(),
-    })) as FabricMovement[];
-    callback(movements);
-  });
-};
-
-// Dyeing Orders
+// --- Dyeing Orders ---
 export const addDyeingOrder = async (order: Omit<DyeingOrder, 'id' | 'orderNumber'>) => {
   const orderNumber = await generateOrderNumber('DYE');
   const orderData = {
@@ -121,27 +192,37 @@ export const addDyeingOrder = async (order: Omit<DyeingOrder, 'id' | 'orderNumbe
     orderNumber,
     date: Timestamp.fromDate(order.date as Date),
   };
-  return await addDoc(collection(db, 'dyeingOrders'), orderData);
+  const docRef = await addDoc(collection(db, 'dyeingOrders'), orderData);
+
+  await addAuditLog(
+    'ADD',
+    'dyeingOrders',
+    docRef.id,
+    orderNumber,
+    `Created dyeing order for ${order.quantity}m of ${order.fabricCode}`
+  );
+  return docRef;
 };
 
 export const updateDyeingOrder = async (id: string, data: Partial<DyeingOrder>) => {
   const docRef = doc(db, 'dyeingOrders', id);
+  const docSnap = await getDoc(docRef);
+  const oldData = docSnap.data();
+  
+  if (data.received !== undefined && oldData?.received !== data.received) {
+    await addAuditLog(
+      'STATUS_CHANGE',
+      'dyeingOrders',
+      id,
+      oldData?.orderNumber,
+      `Status changed: ${oldData?.received ? 'Received' : 'Pending'} -> ${data.received ? 'Received' : 'Pending'}`
+    );
+  }
+  
   return await updateDoc(docRef, data);
 };
 
-export const listenToDyeingOrders = (callback: (data: DyeingOrder[]) => void) => {
-  const q = query(collection(db, 'dyeingOrders'), orderBy('date', 'desc'));
-  return onSnapshot(q, (snapshot) => {
-    const orders = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-      date: doc.data().date?.toDate(),
-    })) as DyeingOrder[];
-    callback(orders);
-  });
-};
-
-// Job Cards
+// --- Job Cards ---
 export const addJobCard = async (jobCard: Omit<JobCard, 'id' | 'jobCardNumber'>) => {
   const jobCardNumber = await generateOrderNumber('JOB');
   const jobCardData = {
@@ -151,35 +232,64 @@ export const addJobCard = async (jobCard: Omit<JobCard, 'id' | 'jobCardNumber'>)
     delivery: Timestamp.fromDate(jobCard.delivery as Date),
     completedOn: jobCard.completedOn ? Timestamp.fromDate(jobCard.completedOn as Date) : null,
   };
-  return await addDoc(collection(db, 'jobCards'), jobCardData);
+  const docRef = await addDoc(collection(db, 'jobCards'), jobCardData);
+  
+  await addAuditLog(
+    'ADD',
+    'jobCards',
+    docRef.id,
+    jobCardNumber,
+    `Created job card for ${jobCard.customerName}`
+  );
+  return docRef;
 };
 
+// --- THIS IS THE FIX ---
+// This function now robustly handles 'undefined' values
 export const updateJobCard = async (id: string, data: Partial<JobCard>) => {
   const docRef = doc(db, 'jobCards', id);
+  const docSnap = await getDoc(docRef);
+  const oldData = docSnap.data();
+
   const updateData: any = { ...data };
   
   if (data.completedOn) {
     updateData.completedOn = Timestamp.fromDate(data.completedOn as Date);
   }
   
+  // This will fix any existing or new bad data in the stageStatus array
+  if (updateData.stageStatus) {
+    updateData.stageStatus = updateData.stageStatus.map((stage: StageStatus) => {
+      let newDate = stage.completedDate;
+      
+      if (newDate instanceof Date) {
+        newDate = Timestamp.fromDate(newDate); // Convert JS Date to Timestamp
+      } else if (newDate === undefined) {
+        newDate = null; // Convert undefined to null
+      }
+      // 'null' remains 'null', 'Timestamp' remains 'Timestamp'
+
+      return {
+        ...stage,
+        completedDate: newDate
+      };
+    });
+  }
+  
+  if (data.currentStage !== undefined && oldData?.currentStage !== data.currentStage) {
+    await addAuditLog(
+      'STATUS_CHANGE',
+      'jobCards',
+      id,
+      oldData?.jobCardNumber,
+      `Stage updated: ${oldData?.currentStage}/5 -> ${data.currentStage}/5`
+    );
+  }
+  
   return await updateDoc(docRef, updateData);
 };
 
-export const listenToJobCards = (callback: (data: JobCard[]) => void) => {
-  const q = query(collection(db, 'jobCards'), orderBy('issuedOn', 'desc'));
-  return onSnapshot(q, (snapshot) => {
-    const jobCards = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-      issuedOn: doc.data().issuedOn?.toDate(),
-      delivery: doc.data().delivery?.toDate(),
-      completedOn: doc.data().completedOn?.toDate(),
-    })) as JobCard[];
-    callback(jobCards);
-  });
-};
-
-// Stitching Work Orders
+// --- Stitching Work Orders ---
 export const addStitchingWorkOrder = async (order: Omit<StitchingWorkOrder, 'id' | 'workOrderNumber'>) => {
   const workOrderNumber = await generateOrderNumber('STW');
   const orderData = {
@@ -188,18 +298,111 @@ export const addStitchingWorkOrder = async (order: Omit<StitchingWorkOrder, 'id'
     issuedOn: Timestamp.fromDate(order.issuedOn as Date),
     completedOn: order.completedOn ? Timestamp.fromDate(order.completedOn as Date) : null,
   };
-  return await addDoc(collection(db, 'stitchingWorkOrders'), orderData);
+  const docRef = await addDoc(collection(db, 'stitchingWorkOrders'), orderData);
+  
+  await addAuditLog(
+    'ADD',
+    'stitchingWorkOrders',
+    docRef.id,
+    workOrderNumber,
+    `Created stitching order for ${order.issuedTo} (Ref: ${order.referenceJobCardNumber})`
+  );
+  return docRef;
 };
 
 export const updateStitchingWorkOrder = async (id: string, data: Partial<StitchingWorkOrder>) => {
   const docRef = doc(db, 'stitchingWorkOrders', id);
+  const docSnap = await getDoc(docRef);
+  const oldData = docSnap.data();
+
   const updateData: any = { ...data };
   
-  if (data.completedOn) {
+  if (data.completedOn) { 
     updateData.completedOn = Timestamp.fromDate(data.completedOn as Date);
+    await addAuditLog(
+      'STATUS_CHANGE',
+      'stitchingWorkOrders',
+      id,
+      oldData?.workOrderNumber,
+      'Marked as Completed'
+    );
+  } else if (data.completedOn === null && oldData?.completedOn) { 
+    updateData.completedOn = null;
+    await addAuditLog(
+      'STATUS_CHANGE',
+      'stitchingWorkOrders',
+      id,
+      oldData?.workOrderNumber,
+      'Marked as Pending'
+    );
   }
   
   return await updateDoc(docRef, updateData);
+};
+
+
+// --- Your existing listener functions ---
+// (The listenToJobCards function is also fixed here)
+
+export const listenToFabricInventory = (callback: (data: FabricInventory[]) => void) => {
+  const q = query(collection(db, 'fabricInventory'), orderBy('rollNumber', 'desc'));
+  return onSnapshot(q, (snapshot) => {
+    const fabrics = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      inwardDate: safeToDate(doc.data().inwardDate), 
+    })) as FabricInventory[];
+    callback(fabrics);
+  });
+};
+
+export const listenToFabricMovements = (callback: (data: FabricMovement[]) => void) => {
+  const q = query(collection(db, 'fabricMovements'), orderBy('date', 'desc'));
+  return onSnapshot(q, (snapshot) => {
+    const movements = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      date: safeToDate(doc.data().date), 
+    })) as FabricMovement[];
+    callback(movements);
+  });
+};
+
+export const listenToDyeingOrders = (callback: (data: DyeingOrder[]) => void) => {
+  const q = query(collection(db, 'dyeingOrders'), orderBy('date', 'desc'));
+  return onSnapshot(q, (snapshot) => {
+    const orders = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      date: safeToDate(doc.data().date), 
+    })) as DyeingOrder[];
+    callback(orders);
+  });
+};
+
+export const listenToJobCards = (callback: (data: JobCard[]) => void) => {
+  const q = query(collection(db, 'jobCards'), orderBy('issuedOn', 'desc'));
+  return onSnapshot(q, (snapshot) => {
+    const jobCards = snapshot.docs.map(doc => {
+      const data = doc.data();
+      
+      // Convert dates inside the stageStatus array
+      const convertedStageStatus = data.stageStatus?.map((stage: any) => ({
+        ...stage,
+        completedDate: safeToOptionalDate(stage.completedDate)
+      })) || []; // Handle if stageStatus doesn't exist
+
+      return {
+        id: doc.id,
+        ...data,
+        issuedOn: safeToDate(data.issuedOn), 
+        delivery: safeToDate(data.delivery), 
+        completedOn: safeToOptionalDate(data.completedOn),
+        stageStatus: convertedStageStatus, // Use the converted array
+      };
+    }) as JobCard[];
+    callback(jobCards);
+  });
 };
 
 export const listenToStitchingWorkOrders = (callback: (data: StitchingWorkOrder[]) => void) => {
@@ -208,8 +411,8 @@ export const listenToStitchingWorkOrders = (callback: (data: StitchingWorkOrder[
     const orders = snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
-      issuedOn: doc.data().issuedOn?.toDate(),
-      completedOn: doc.data().completedOn?.toDate(),
+      issuedOn: safeToDate(doc.data().issuedOn), 
+      completedOn: safeToOptionalDate(doc.data().completedOn), 
     })) as StitchingWorkOrder[];
     callback(orders);
   });

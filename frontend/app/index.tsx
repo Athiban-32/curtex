@@ -1,19 +1,12 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
+import React from 'react'; // Removed useEffect
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native'; // Removed Image
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function WelcomeScreen() {
   const router = useRouter();
 
-  useEffect(() => {
-    // Auto navigate to tabs after 2 seconds
-    const timer = setTimeout(() => {
-      router.replace('/(tabs)/dashboard');
-    }, 2000);
-
-    return () => clearTimeout(timer);
-  }, []);
+  // REMOVED THE useEffect with setTimeout
 
   return (
     <View style={styles.container}>
@@ -44,17 +37,19 @@ export default function WelcomeScreen() {
 
       <TouchableOpacity
         style={styles.button}
-        onPress={() => router.replace('/(tabs)/dashboard')}
+        // UPDATED ONPRESS:
+        onPress={() => router.push('/(auth)/login')} // Go to login screen
       >
         <Text style={styles.buttonText}>Get Started</Text>
         <Ionicons name="arrow-forward" size={20} color="#fff" />
       </TouchableOpacity>
 
-      <Text style={styles.footer}>Powered by Firebase & React Native</Text>
+      <Text style={styles.footer}>Powered By Curtex Furnishing</Text>
     </View>
   );
 }
 
+// ... your existing styles ...
 const styles = StyleSheet.create({
   container: {
     flex: 1,

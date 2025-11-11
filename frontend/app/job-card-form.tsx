@@ -73,13 +73,14 @@ export default function JobCardForm() {
       const deliveryDate = new Date();
       deliveryDate.setDate(deliveryDate.getDate() + parseInt(formData.deliveryDays || '7'));
 
-      // Initialize stage status
+      // --- THIS IS THE FIX ---
+      // We must initialize completedDate as null
       const stageStatus: StageStatus[] = [
-        { stage: 1, name: 'Fabric Received', completed: false },
-        { stage: 2, name: 'Cutting Complete', completed: false },
-        { stage: 3, name: 'Stitching Complete', completed: false },
-        { stage: 4, name: 'Quality Check', completed: false },
-        { stage: 5, name: 'Packing Done', completed: false },
+        { stage: 1, name: 'Fabric Received', completed: false, completedDate: null },
+        { stage: 2, name: 'Cutting Complete', completed: false, completedDate: null },
+        { stage: 3, name: 'Stitching Complete', completed: false, completedDate: null },
+        { stage: 4, name: 'Quality Check', completed: false, completedDate: null },
+        { stage: 5, name: 'Packing Done', completed: false, completedDate: null },
       ];
 
       await addJobCard({
@@ -390,6 +391,7 @@ export default function JobCardForm() {
   );
 }
 
+// ... (Your existing styles) ...
 const styles = StyleSheet.create({
   container: {
     flex: 1,

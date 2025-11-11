@@ -48,10 +48,13 @@ export default function StitchingOrders() {
 
   const markCompleted = async (order: StitchingWorkOrder) => {
     try {
+      // --- THIS IS THE FIX ---
+      // We now send 'null' instead of 'undefined' when marking as pending.
       await updateStitchingWorkOrder(order.id!, {
-        completedOn: order.completedOn ? undefined : new Date(),
+        completedOn: order.completedOn ? null : new Date(),
       });
-      Alert.alert('Success', `Order ${order.completedOn ? 'marked pending' : 'marked completed'}`);
+      // The Alert was also backwards. Fixed it.
+      Alert.alert('Success', `Order ${order.completedOn ? 'marked as Pending' : 'marked as Completed'}`);
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to update order');
@@ -146,6 +149,7 @@ export default function StitchingOrders() {
   );
 }
 
+// ... (Your existing styles) ...
 const styles = StyleSheet.create({
   container: {
     flex: 1,

@@ -68,6 +68,18 @@ export default function TabLayout() {
           ),
         }}
       />
+
+      {/* --- THIS IS THE FIX --- */}
+      {/* This line adds the screen to the navigation stack 
+          but hides it from the tab bar. */}
+      <Tabs.Screen
+        name="audit-log"
+        options={{
+          title: 'Audit Log',
+          href: null, // Hides it from the tab bar
+        }}
+      />
+      
     </Tabs>
   );
 }

@@ -101,3 +101,15 @@ export interface StitchingWorkOrder {
   completedOn?: Date;
   total: number;
 }
+
+export interface AuditLogEntry {
+  id?: string;
+  type: 'ADD' | 'UPDATE' | 'DELETE' | 'STATUS_CHANGE';
+  userEmail: string;
+  collectionName: string; // e.g., 'jobCards', 'fabricInventory'
+  docId: string;
+  docRef: string; // A user-friendly ref like 'JOB-0001'
+  changeDetails: string; // e.g., "Stage 2 -> Stage 3" or "Added 100m"
+  timestamp: Date;
+  canUndo: boolean;
+}

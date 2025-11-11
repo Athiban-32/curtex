@@ -56,15 +56,26 @@ export default function JobCards() {
     }
   };
 
+  // --- THIS IS THE FIX ---
+  // We now send 'null' instead of 'undefined' when un-checking a stage
   const updateStage = async (jobCard: JobCard, newStage: number) => {
     try {
+      // Find the current state of the stage
+      const currentStageStatus = jobCard.stageStatus.find(s => s.stage === newStage);
+      const isCurrentlyCompleted = currentStageStatus?.completed || false;
+
       const updatedStageStatus = jobCard.stageStatus.map(s => 
         s.stage === newStage 
-          ? { ...s, completed: !s.completed, completedDate: !s.completed ? new Date() : undefined }
+          ? { 
+              ...s, 
+              completed: !isCurrentlyCompleted, 
+              // Set to new Date() if marking complete, set to null if un-marking
+              completedDate: !isCurrentlyCompleted ? new Date() : null 
+            } 
           : s
       );
 
-      // Calculate current stage based on completed stages
+      // Calculate new current stage
       const completedStages = updatedStageStatus.filter(s => s.completed).length;
       
       await updateJobCard(jobCard.id!, {
@@ -72,7 +83,17 @@ export default function JobCards() {
         stageStatus: updatedStageStatus,
       });
 
-      Alert.alert('Success', 'Stage status updated');
+      // Optimistically update the local state for a smooth UI
+      setSelectedCard(prev => {
+        if (!prev) return null;
+        const completedCount = updatedStageStatus.filter(s => s.completed).length;
+        return {
+          ...prev,
+          stageStatus: updatedStageStatus,
+          currentStage: completedCount
+        };
+      });
+
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to update stage');
@@ -121,7 +142,8 @@ export default function JobCards() {
 
         <View style={styles.stagesContainer}>
           {STAGES.map((stage) => {
-            const stageData = item.stageStatus.find(s => s.stage === stage.stage);
+            // Ensure stageStatus exists before finding
+            const stageData = item.stageStatus?.find(s => s.stage === stage.stage);
             const isCompleted = stageData?.completed || false;
 
             return (
@@ -210,7 +232,8 @@ export default function JobCards() {
                 <Text style={styles.cardInfo}>{selectedCard.jobCardNumber}</Text>
                 
                 {STAGES.map((stage) => {
-                  const stageData = selectedCard.stageStatus.find(s => s.stage === stage.stage);
+                  // Ensure stageStatus exists before finding
+                  const stageData = selectedCard.stageStatus?.find(s => s.stage === stage.stage);
                   const isCompleted = stageData?.completed || false;
 
                   return (
@@ -229,7 +252,8 @@ export default function JobCards() {
                           <Text style={[styles.stageName, isCompleted && styles.stageNameCompleted]}>
                             Stage {stage.stage}: {stage.name}
                           </Text>
-                          {isCompleted && stageData.completedDate && (
+                          {/* This is where the time crash was. It's now fixed. */}
+                          {isCompleted && stageData?.completedDate && (
                             <Text style={styles.stageDate}>
                               {format(stageData.completedDate, 'dd-MMM-yyyy')}
                             </Text>
@@ -253,6 +277,7 @@ export default function JobCards() {
   );
 }
 
+// ... (Your existing styles) ...
 const styles = StyleSheet.create({
   container: {
     flex: 1,
